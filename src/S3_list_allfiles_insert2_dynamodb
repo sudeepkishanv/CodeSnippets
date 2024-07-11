@@ -1,0 +1,72 @@
+# This code is used to list all objects (files) in an S3 Bucket folder, insert the file names in Dynamodb
+# The performance of this Lambda is not great, probably insert around 1200 files into Dynamodb (with 1 GB Memory and 10 Minutes task timeout)
+# Make sure the lambda role has following permission: "AmazonDynamoDBFullAccess" and the below ones:
+#                "s3:GetObject",
+#                "s3:ListBucket",
+#                "s3:PutObject",
+#                "s3:PutObjectAcl",
+#                "s3:GetBucketPolicy"
+
+import json
+import boto3
+import os
+import logging
+
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s-%(name)s-%(levelname)s-%(message)s", level=logging.INFO
+)
+
+CREATE_SORTER_PROCESS = '/createSorterProcess'
+src_bucket_name = 'nonprod-failed-event-s3'
+src_folder_name = 'events/year=2024/month=05/day=09/lambda_sorter/RetryAttemptsExhausted/'
+#folder_name = 'events/year=2024/month=01/day=31/lambda_sorter/RetryAttemptsExhausted/'
+tgt_bucket_name = 'nonprod-sorter-retriable'
+tgt_folder_name = 'to_be_processed/'
+
+def lambda_handler(event, context):
+    try:
+        _print_s3_objects()
+
+    except Exception as error:
+        logger.exception("###########  ERRRrrrrrrrrrrrr !")
+        print(error)
+
+def _print_s3_objects():
+    try:
+        s3_client = boto3.client('s3')
+        dynamodb = boto3.client('dynamodb')
+
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=src_bucket_name, Prefix=src_folder_name)
+
+        #response = s3_client.list_objects_v2(Bucket = bucket_name, Prefix = folder_name)
+
+        for page in pages:
+            print("Total Files in S3 Bucket: ", page['KeyCount'])
+            print("Page content: ", page['Contents'])
+
+            for obj in page['Contents']:
+                file_size = str(obj['Size'])
+                print("File Size is: ",file_size, type(file_size) )
+                dynamodb.put_item(TableName = 'sorter_failedfiles_sk_tbd', Item = {'keyname':{'S':obj['Key']}, 'size': {'N':file_size}})
+                print("FileName: ", obj['Key'], " Size: ", obj['Size'])
+#                #print('###### File name is: ', obj['Key'])
+#                _copy_s3_files(obj['Key'])
+            #    print("Total File Copying Done: ", cnt)
+    except Exception as err:
+        print(err)
+
+def _copy_s3_files(src_file):
+
+    src_filename_only = src_file.split("/")[-1]
+    #print("SOURCE FILE NAME ONLY: ", src_filename_only)
+    source = {'Bucket':src_bucket_name, 'Key': src_file}
+    s3_res = boto3.resource('s3')
+    #print("#### Copying file from S3 Source Bucket to Target Bucket ####")
+    tgt_bucket = s3_res.Bucket(tgt_bucket_name)
+    tgt_file = 'to_be_processed/'+src_filename_only
+    tgt_bucket.copy(source, tgt_file)
+    #print("#### COPY SUCCESSFUL ####")
